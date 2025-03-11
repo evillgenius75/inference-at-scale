@@ -1,0 +1,15 @@
+apiVersion: cloud.google.com/v1
+kind: ComputeClass
+metadata:
+  name: inference-autoprov 
+spec:
+  nodePoolAutoCreation:
+    enabled: true
+  priorities:
+  - gpu:
+      type: nvidia-tesla-a100
+      count: 1
+  - tpu:
+      type: tpu-v5-lite-podslice
+      count: 4
+      topology: 2x2

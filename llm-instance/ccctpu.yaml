@@ -1,0 +1,12 @@
+apiVersion: cloud.google.com/v1
+kind: ComputeClass
+metadata:
+  name: tpu-inference-autoprov 
+spec:
+  nodePoolAutoCreation:
+    enabled: true
+  priorities:
+  - tpu:
+      type: tpu-v5-lite-podslice
+      count: 4
+      topology: 2x2

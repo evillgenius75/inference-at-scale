@@ -1,0 +1,201 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: vllm-serve.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: LLMServe
+    spec:
+      name: string | default=vllm-inf
+      namespace: string | default=default
+      modelId: string | default=meta-llama/Meta-Llama-3-8B
+      values:
+        vllmConfig:
+          vllmVersion: string | default=v0.7.2
+          tensorParallelism: integer | 1
+          numSchedulerSteps: integer | default=1
+          maxModelLen: integer | default=8192
+        deployment:
+          labels: 'map[string]string | default={"app": "vllm-inference-server", "k8s-app": "vllm-inf"}'
+          replicas: integer | default=1
+          accelerator: 'map[string]string] | default={"nvidia.com/gpu": "1"}'
+          computeClass: string | default=gpu-inference-autoprov
+        hpa:
+          minReplicas: integer | default=1
+          maxReplicas: integer | default=10
+  resources:
+    - id: deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          annotations:
+            aire.gke.io/generated: "true"
+            aire.gke.io/inference-server: vllm
+          labels:
+            ${schema.spec.values.deployment.labels}
+          name: ${schema.spec.name}-deployment
+          namespace: ${schema.spec.namespace}
+        spec:
+          replicas: ${schema.spec.values.deployment.replicas}
+          selector:
+            matchLabels:
+              ${schema.spec.values.deployment.labels}
+          strategy: {}
+          template:
+            metadata:
+              labels:
+                ${schema.spec.values.deployment.labels}
+            spec:
+              containers:
+              - args:
+                - --model=$(MODEL_ID)
+                - --disable-log-requests
+                - --gpu-memory-utilization=0.95
+                - --tensor-parallel-size=${schema.spec.values.vllmConfig.tensorParallelism}
+                - --num-scheduler-steps=${schema.spec.values.vllmConfig.numSchedulerSteps}
+                - --max-model-len=${schema.spec.values.vllmConfig.maxModelLen}
+                command:
+                - python3
+                - -m
+                - vllm.entrypoints.openai.api_server
+                env:
+                - name: MODEL_ID
+                  value: ${schema.spec.modelId}
+                - name: HUGGING_FACE_HUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      key: hf_api_token
+                      name: hf-secret
+                image: vllm/vllm-openai:${schema.spec.values.vllmConfig.vllmVersion}
+                imagePullPolicy: Always
+                name: inference-server
+                ports:
+                - containerPort: 8000
+                  name: metrics
+                readinessProbe:
+                  failureThreshold: 6000
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    ${schema.spec.values.deployment.accelerator}
+                  requests:
+                    ${schema.spec.values.deployment.accelerator}
+                volumeMounts:
+                - mountPath: /dev/shm
+                  name: dshm
+              nodeSelector:
+                cloud.google.com/compute-class: ${schema.spec.values.deployment.computeClass}
+              volumes:
+              - emptyDir:
+                  medium: Memory
+                name: dshm
+    - id: horizontalPodAutoscaler
+      template:
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        metadata:
+          annotations:
+            aire.gke.io/generated: "true"
+          creationTimestamp: null
+          name: ${schema.spec.name}-hpa
+          namespace: default
+        spec:
+          maxReplicas: ${schema.spec.values.hpa.maxReplicas}
+          minReplicas: ${schema.spec.values.hpa.minReplicas}
+          metrics:
+          - pods:
+              metric:
+                name: prometheus.googleapis.com|vllm:num_requests_waiting|gauge
+              target:
+                averageValue: "1"
+                type: AverageValue
+            type: Pods
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: ${schema.spec.name}
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          annotations:
+            aire.gke.io/generated: "true"
+          creationTimestamp: null
+          labels:
+            ${schema.spec.values.deployment.labels}
+          name: ${schema.spec.name}-service
+          namespace: ${schema.spec.namespace}
+        spec:
+          ports:
+          - port: 8000
+            protocol: TCP
+            targetPort: 8000
+          selector:
+            ${schema.spec.values.deployment.labels}
+          type: ClusterIP
+    - id: monitoring
+      template:
+        apiVersion: monitoring.googleapis.com/v1
+        kind: PodMonitoring
+        metadata:
+          annotations:
+            aire.gke.io/generated: "true"
+          labels:
+            ${schema.spec.values.deployment.labels}
+          name: ${schema.spec.name}-podmonitoring
+          namespace: ${schema.spec.namespace}
+        spec:
+          endpoints:
+          - interval: 15s
+            path: /metrics
+            port: metrics
+          selector:
+            matchLabels:
+              ${schema.spec.values.deployment.labels}
+          targetLabels:
+            metadata:
+            - pod
+            - container
+            - node
+    # - id: cccGpu
+    #   template:
+    #     apiVersion: cloud.google.com/v1
+    #     kind: ComputeClass
+    #     metadata:
+    #       name: gpu-inference-autoprov 
+    #     spec:
+    #       nodePoolAutoCreation:
+    #         enabled: true
+    #       priorities:
+    #       - gpu:
+    #           type: nvidia-tesla-a100
+    #           count: 1
+    #       - gpu:
+    #           type: nvidia-tesla-a100
+    #           count: 1
+    #         spot: true
+    # - id: cccTpu
+    #   template:
+    #     apiVersion: cloud.google.com/v1
+    #     kind: ComputeClass
+    #     metadata:
+    #       name: tpu-inference-autoprov 
+    #     spec:
+    #       nodePoolAutoCreation:
+    #         enabled: true
+    #       priorities:
+    #       - tpu:
+    #           type: tpu-v5-lite-podslice
+    #           count: 4
+    #           topology: 2x2
+    #       - tpu:
+    #           type: tpu-v5-lite-podslice
+    #           count: 4
+    #           topology: 2x2
+    #         spot: true

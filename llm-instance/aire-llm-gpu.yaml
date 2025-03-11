@@ -1,0 +1,22 @@
+apiVersion: kro.run/v1alpha1
+kind: LLMServe
+metadata:
+  name: aire-deployment
+spec:
+  name: vllm-inf-ejv
+  namespace: default
+  modelId: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  values:
+    vllmConfig:
+      vllmVersion: v0.7.2
+      tensorParallelism: 1
+      numSchedulerSteps: 1
+      maxModelLen: 8192
+    deployment:
+      computeClass: gpu-inference-autoprov
+      replicas: 1
+      accelerator: 
+        nvidia-gpu: "1"
+    hpa:
+      minReplicas: 1
+      maxReplicas: 10
