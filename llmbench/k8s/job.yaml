@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openai-api-load-job
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers: # Removed initContainers as they are not needed for this app
+        - name: wait-for-vllm-deployment
+          image: nixery.dev/shell/curl/jq/kubectl
+          command: ['sh', '-c']
+          args:
+            - |
+              set -ex
+              TIMEOUT=300
+              POLL_INTERVAL=10
+              DEPLOYMENT_NAME="vllm-inf-deployment"
+              NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+              echo "Waiting for deployment '${DEPLOYMENT_NAME}' in namespace '${NAMESPACE}' to become ready..."
+
+              while true; do
+                # Use kubectl for more robust deployment status check
+                READY=$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.readyReplicas}')
+                DESIRED=$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')
+
+                if [[ "$READY" -eq "$DESIRED" && "$DESIRED" -gt "0" ]]; then
+                  echo "Deployment '${DEPLOYMENT_NAME}' is ready."
+                  exit 0
+                fi
+
+                if (( $(date +%s) > $(($(date +%s) + TIMEOUT)) )); then
+                  echo "Timeout waiting for deployment '${DEPLOYMENT_NAME}'."
+                  exit 1
+                fi
+
+                echo "Deployment '${DEPLOYMENT_NAME}' not yet ready. Ready replicas: ${READY:-0}, Desired replicas: ${DESIRED:-0}. Waiting ${POLL_INTERVAL} seconds..."
+                sleep "${POLL_INTERVAL}"
+              done
+      containers:
+        - name: openai-api-load-container
+          image: us-central1-docker.pkg.dev/cr25-spotlight/cr25-spotlight-repo/evbench:latest # Replace with your image
+          imagePullPolicy: Always # Or IfNotPresent if you are not pushing to a registry
+          command: ["./main"]
+          args:
+            - "-base_url=http://vllm-inf-service:8000/v1/chat/completions"
+            - "-model=google/gemma-2-2b-it"
+            - "-max_tokens=500"
+            - "-temperature=0"
+            - "-message={\"messages\":[{\"role\": \"user\",\"content\": \"hello\"},{\"role\": \"assistant\",\"content\": \"you are a helpful assistant!\"},{\"role\": \"user\",\"content\": \"Tell me a bedtime story, that is no less than 1000 words, about a unicorn.\"}]}"
+            - "-max_users=100"
+  backoffLimit: 4

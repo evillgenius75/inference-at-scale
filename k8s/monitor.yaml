@@ -1,0 +1,23 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  annotations:
+    aire.gke.io/generated: "true"
+  labels:
+    app.kubernetes.io/name: vllm-podmonitoring
+    app.kubernetes.io/part-of: google-cloud-managed-prometheus
+  name: vllm-podmonitoring
+  namespace: inference
+spec:
+  endpoints:
+  - interval: 15s
+    path: /metrics
+    port: metrics
+  selector:
+    matchLabels:
+      app: gemma-2-2b-it-vllm-inference-server
+  targetLabels:
+    metadata:
+    - pod
+    - container
+    - node

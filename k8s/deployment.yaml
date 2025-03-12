@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    aire.gke.io/generated: "true"
+    aire.gke.io/inference-server: vllm
+  labels:
+    app: gemma-2-2b-it-vllm-inference-server
+  name: vllm-inf-deployment
+  namespace: inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gemma-2-2b-it-vllm-inference-server
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        ai.gke.io/inference-server: vllm
+        ai.gke.io/model: gemma-2-2b-it
+        app: gemma-2-2b-it-vllm-inference-server
+        examples.ai.gke.io/source: blueprints
+    spec:
+      containers:
+      - args:
+        - --model=$(MODEL_ID)
+        - --disable-log-requests
+        - --tensor-parallel-size=1
+        - --max-num-seq=1024
+        - --num-scheduler-steps=8
+        command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+        env:
+        - name: MODEL_ID
+          value: google/gemma-2-2b-it
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: hf_api_token
+              name: hf-secret
+        image: vllm/vllm-openai:v0.7.2
+        name: inference-server
+        ports:
+        - containerPort: 8000
+          name: metrics
+        readinessProbe:
+          failureThreshold: 6000
+          httpGet:
+            path: /health
+            port: 8000
+          periodSeconds: 10
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+          requests:
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      nodeSelector:
+        cloud.google.com/compute-class: gpu-inference-autoprov
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: dshm
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  annotations:
+    aire.gke.io/generated: "true"
+  creationTimestamp: null
+  labels:
+    app: gemma-2-2b-it-vllm-inference-server
+  name: vllm-hpa
+  namespace: inference
+spec:
+  maxReplicas: 10
+  metrics:
+  - pods:
+      metric:
+        name: prometheus.googleapis.com|vllm:gpu_cache_usage_perc|gauge
+      target:
+        averageValue: 496m
+        type: AverageValue
+    type: Pods
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-inf-deployment
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    aire.gke.io/generated: "true"
+  creationTimestamp: null
+  labels:
+    app: gemma-2-2b-it-vllm-inference-server
+  name: vllm-inf-service
+  namespace: inference
+spec:
+  ports:
+  - port: 8000
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app: gemma-2-2b-it-vllm-inference-server
+  type: ClusterIP
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  annotations:
+    aire.gke.io/generated: "true"
+  labels:
+    app.kubernetes.io/name: vllm-podmonitoring
+    app.kubernetes.io/part-of: google-cloud-managed-prometheus
+  name: vllm-podmonitoring
+  namespace: inference
+spec:
+  endpoints:
+  - interval: 15s
+    path: /metrics
+    port: metrics
+  selector:
+    matchLabels:
+      app: gemma-2-2b-it-vllm-inference-server
+  targetLabels:
+    metadata:
+    - pod
+    - container
+    - node
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openai-api-load-job
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers: # Removed initContainers as they are not needed for this app
+        - name: wait-for-vllm-deployment
+          image: nixery.dev/shell/curl/jq/kubectl
+          command: ['sh', '-c']
+          args:
+            - |
+              set -ex
+              TIMEOUT=300
+              POLL_INTERVAL=10
+              DEPLOYMENT_NAME="vllm-inf-deployment"
+              NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+              echo "Waiting for deployment '${DEPLOYMENT_NAME}' in namespace '${NAMESPACE}' to become ready..."
+
+              while true; do
+                # Use kubectl for more robust deployment status check
+                READY=$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.readyReplicas}')
+                DESIRED=$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')
+
+                if [[ "$READY" -eq "$DESIRED" && "$DESIRED" -gt "0" ]]; then
+                  echo "Deployment '${DEPLOYMENT_NAME}' is ready."
+                  exit 0
+                fi
+
+                if (( $(date +%s) > $(($(date +%s) + TIMEOUT)) )); then
+                  echo "Timeout waiting for deployment '${DEPLOYMENT_NAME}'."
+                  exit 1
+                fi
+
+                echo "Deployment '${DEPLOYMENT_NAME}' not yet ready. Ready replicas: ${READY:-0}, Desired replicas: ${DESIRED:-0}. Waiting ${POLL_INTERVAL} seconds..."
+                sleep "${POLL_INTERVAL}"
+              done
+      containers:
+        - name: openai-api-load-container
+          image: us-central1-docker.pkg.dev/cr25-spotlight/cr25-spotlight-repo/evbench:latest # Replace with your image
+          imagePullPolicy: Always # Or IfNotPresent if you are not pushing to a registry
+          command: ["./main"]
+          args:
+            - "-base_url=http://vllm-inf-service:8000/v1/chat/completions"
+            - "-model=google/gemma-2-2b-it"
+            - "-max_tokens=500"
+            - "-temperature=0"
+            - "-message={\"messages\":[{\"role\": \"user\",\"content\": \"hello\"},{\"role\": \"assistant\",\"content\": \"you are a helpful assistant!\"},{\"role\": \"user\",\"content\": \"Tell me a bedtime story, that is no less than 1000 words, about a unicorn.\"}]}"
+            - "-max_users=300"
+  backoffLimit: 4

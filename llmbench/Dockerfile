@@ -8,14 +8,14 @@ COPY go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -o main cmd/main.go
+RUN go build -o llmbench cmd/main.go
 
 # Stage 2: Create the final image
 FROM alpine:latest
 
 WORKDIR /app
 
-COPY --from=builder /app/main ./main
+COPY --from=builder /app/llmbench ./llmbench
 
 # Install necessary packages (adjust as needed)
 RUN apk add --no-cache curl
@@ -27,4 +27,4 @@ ENV BASE_URL=""
 EXPOSE 8000
 
 # Set the entrypoint
-ENTRYPOINT ["./main"]
+ENTRYPOINT ["./llmbench"]
