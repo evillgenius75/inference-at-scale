@@ -16,7 +16,7 @@ spec:
       computeClass: gpu-inference-autoprov
       replicas: 1
       accelerator: 
-        nvidia-gpu: "1"
+        nvidia.com/gpu: "1"
     hpa:
       minReplicas: 1
       maxReplicas: 10
