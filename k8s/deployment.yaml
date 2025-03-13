@@ -140,6 +140,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: openai-api-load-job
+  namespace: inference
 spec:
   template:
     spec:

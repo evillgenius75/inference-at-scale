@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vllm-benchmark-job
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-vllm-deployment
+          image: bitnami/kubectl:latest
+          command: ['sh', '-c']
+          args:
+            - |
+              set -ex
+              TIMEOUT=300  # Timeout in seconds
+              POLL_INTERVAL=10 # Check every 10 seconds
+              DEPLOYMENT_NAME="vllm-inf-deployment"
+              NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+              echo "Waiting for deployment '${DEPLOYMENT_NAME}' in namespace '${NAMESPACE}' to become ready..."
+
+              while true; do
+                READY_REPLICAS=$(kubectl get deployment -n "${NAMESPACE}" "${DEPLOYMENT_NAME}" -o jsonpath='{.status.readyReplicas}')
+                DESIRED_REPLICAS=$(kubectl get deployment -n "${NAMESPACE}" "${DEPLOYMENT_NAME}" -o jsonpath='{.spec.replicas}')
+
+                if [[ "${READY_REPLICAS}" -eq "${DESIRED_REPLICAS}" && "${DESIRED_REPLICAS}" -gt 0 ]]; then
+                  echo "Deployment '${DEPLOYMENT_NAME}' is ready."
+                  exit 0
+                fi
+
+                if (( $(date +%s) > $(date +%s) + TIMEOUT )); then #Corrected timeout check
+                  echo "Timeout waiting for deployment '${DEPLOYMENT_NAME}'."
+                  exit 1
+                fi
+
+                echo "Deployment '${DEPLOYMENT_NAME}' not yet ready. Ready replicas: ${READY_REPLICAS:-0}, Desired replicas: ${DESIRED_REPLICAS:-0}. Waiting ${POLL_INTERVAL} seconds..."
+                sleep "${POLL_INTERVAL}"
+              done
+      containers:
+        - name: benchmark-container
+          image: us-central1-docker.pkg.dev/cr25-spotlight/cr25-spotlight-repo/llmbench:latest
+          command: ["llmapibenchmark"]
+          args: ["-base_url=http://vllm-inf-service:8000/v1"]
